@@ -1,0 +1,127 @@
+name: Build & Release APKs
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release Tag (leave empty to auto-generate from version)'
+        required: false
+        default: ''
+      prerelease:
+        description: 'Mark as pre-release'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Accept Android SDK licenses
+        run: |
+          yes | sdkmanager --licenses || true
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Build Debug APKs (All Architectures)
+        env:
+          TERMUX_PACKAGE_VARIANT: "apt-android-7"
+          TERMUX_SPLIT_APKS_FOR_DEBUG_BUILDS: "1"
+        run: |
+          ./gradlew assembleDebug
+
+      - name: Prepare Release Assets
+        id: prep
+        run: |
+          # Determine release tag name
+          if [ -n "${{ github.event.inputs.tag_name }}" ]; then
+            TAG="${{ github.event.inputs.tag_name }}"
+          elif [ "${GITHUB_REF#refs/tags/}" != "$GITHUB_REF" ]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+          else
+            VERSION=$(grep -m 1 -E 'versionName\s+"([^"]+)"' app/build.gradle | sed -E 's/.*versionName\s+"([^"]+)".*/\1/')
+            TAG="v${VERSION}+$(git rev-parse --short HEAD)"
+          fi
+
+          echo "TAG=$TAG" >> $GITHUB_ENV
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+          APK_SRC_DIR="app/build/outputs/apk/debug"
+          mkdir -p dist
+
+          echo "=== Copying and renaming architecture APKs ==="
+          # Map generated APKs to clear distribution filenames
+          cp "$APK_SRC_DIR"/*arm64-v8a.apk "dist/MyTermux-${TAG}-arm64-v8a.apk"
+          cp "$APK_SRC_DIR"/*armeabi-v7a.apk "dist/MyTermux-${TAG}-arm32-v7a.apk"
+          cp "$APK_SRC_DIR"/*x86.apk "dist/MyTermux-${TAG}-x86.apk"
+          cp "$APK_SRC_DIR"/*x86_64.apk "dist/MyTermux-${TAG}-x86_64.apk"
+          cp "$APK_SRC_DIR"/*universal.apk "dist/MyTermux-${TAG}-universal.apk"
+
+          echo "=== Generating SHA256 Checksums ==="
+          cd dist
+          sha256sum *.apk > sha256sums.txt
+          cat sha256sums.txt
+          cd ..
+
+      - name: Generate Release Notes
+        run: |
+          cat << 'EOF' > release_notes.md
+          ### MyTermux Release
+
+          Enhanced Termux with Embedded WebView, Chrome DevTools Protocol (CDP) bridge, and CLI management.
+
+          #### Architecture APKs Included
+          - **Arm64 (`arm64-v8a`)**: For modern 64-bit ARM devices (phones, tablets).
+          - **Arm32-hf (`armeabi-v7a`)**: For 32-bit ARM devices.
+          - **x86 (`x86`)**: For 32-bit x86 emulators and devices.
+          - **x86_64 (`x86_64`)**: For 64-bit x86 emulators and ChromeOS/PC installations.
+          - **Universal**: Contains all native ABI binaries in a single APK.
+
+          #### Key Features
+          - **Embedded WebView Sessions**: Native multi-tab web browsing directly inside the Termux session drawer with Lucide vector icons.
+          - **Cleartext HTTP Support**: Seamless development with local web servers (`http://localhost:<port>`, `http://127.0.0.1:<port>`).
+          - **Chrome DevTools Protocol (CDP)**: Background native socket bridge forwarder for browser debugging, automation, and inspection via WebSocket.
+          - **`termux-web` CLI**: Command line tool supporting `termux-web ls`, `termux-web forward [id] [port]`, and web session dispatching.
+
+          #### SHA256 Checksums
+          See attached `sha256sums.txt` for integrity verification.
+          EOF
+
+      - name: Publish GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PRERELEASE_FLAG: ${{ github.event.inputs.prerelease == 'true' && '--prerelease' || '' }}
+        run: |
+          echo "Publishing release $TAG..."
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG exists, uploading assets..."
+            gh release upload "$TAG" --clobber dist/*
+          else
+            echo "Creating new release $TAG..."
+            gh release create "$TAG" \
+              --title "MyTermux $TAG" \
+              --notes-file release_notes.md \
+              $PRERELEASE_FLAG \
+              dist/*
+          fi
