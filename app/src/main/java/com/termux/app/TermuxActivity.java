@@ -21,16 +21,20 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.ImageButton;
 import android.widget.ListView;
 import android.widget.RelativeLayout;
 import android.widget.Toast;
+import android.webkit.WebView;
 
 import com.termux.R;
 import com.termux.app.api.file.FileReceiverActivity;
 import com.termux.app.terminal.TermuxActivityRootView;
 import com.termux.app.terminal.TermuxTerminalSessionActivityClient;
 import com.termux.app.terminal.io.TermuxTerminalExtraKeys;
+import com.termux.app.web.TermuxWebSession;
+import com.termux.app.web.TermuxWebSessionManager;
 import com.termux.shared.activities.ReportActivity;
 import com.termux.shared.activity.ActivityUtils;
 import com.termux.shared.activity.media.AppCompatActivityUtils;
@@ -77,7 +81,12 @@ import java.util.Arrays;
  * </ul>
  * about memory leaks.
  */
-public final class TermuxActivity extends AppCompatActivity implements ServiceConnection {
+public final class TermuxActivity extends AppCompatActivity implements ServiceConnection, TermuxWebSessionManager.WebSessionListListener {
+
+    private static TermuxActivity sInstance;
+
+    private FrameLayout mWebViewContainer;
+    private TermuxWebSession mCurrentWebSession;
 
     /**
      * The connection to the {@link TermuxService}. Requested in {@link #onCreate(Bundle)} with a call to
@@ -215,6 +224,9 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
 
         setContentView(R.layout.activity_termux);
 
+        sInstance = this;
+        TermuxWebSessionManager.getInstance().addListener(this);
+
         // Load termux shared preferences
         // This will also fail if TermuxConstants.TERMUX_PACKAGE_NAME does not equal applicationId
         mPreferences = TermuxAppSharedPreferences.build(this, true);
@@ -347,6 +359,11 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     @Override
     public void onDestroy() {
         super.onDestroy();
+
+        TermuxWebSessionManager.getInstance().removeListener(this);
+        if (sInstance == this) {
+            sInstance = null;
+        }
 
         Logger.logDebug(LOG_TAG, "onDestroy");
 
@@ -490,6 +507,8 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         mTerminalView = findViewById(R.id.terminal_view);
         mTerminalView.setTerminalViewClient(mTermuxTerminalViewClient);
 
+        mWebViewContainer = findViewById(R.id.web_view_container);
+
         if (mTermuxTerminalViewClient != null)
             mTermuxTerminalViewClient.onCreate();
 
@@ -603,6 +622,10 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     public void onBackPressed() {
         if (getDrawer().isDrawerOpen(Gravity.LEFT)) {
             getDrawer().closeDrawers();
+        } else if (mCurrentWebSession != null && mCurrentWebSession.canGoBack()) {
+            mCurrentWebSession.goBack();
+        } else if (mCurrentWebSession != null) {
+            showTerminalView();
         } else {
             finishActivityIfNotFinishing();
         }
@@ -856,7 +879,9 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
 
 
     public void termuxSessionListNotifyUpdated() {
-        mTermuxSessionListViewController.notifyDataSetChanged();
+        if (mTermuxSessionListViewController != null) {
+            mTermuxSessionListViewController.notifyDataSetChanged();
+        }
     }
 
     public boolean isVisible() {
@@ -875,6 +900,75 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
 
     public TermuxService getTermuxService() {
         return mTermuxService;
+    }
+
+    public static TermuxActivity getActivity() {
+        return sInstance;
+    }
+
+    public FrameLayout getWebViewContainer() {
+        return mWebViewContainer;
+    }
+
+    public TermuxWebSession getCurrentWebSession() {
+        return mCurrentWebSession;
+    }
+
+    public boolean isWebSessionActive() {
+        return mCurrentWebSession != null;
+    }
+
+    public void showWebSession(@NonNull final TermuxWebSession webSession) {
+        runOnUiThread(() -> {
+            mCurrentWebSession = webSession;
+            if (mWebViewContainer != null) {
+                mWebViewContainer.removeAllViews();
+                WebView wv = webSession.getWebView();
+                if (wv != null) {
+                    if (wv.getParent() instanceof ViewGroup) {
+                        ((ViewGroup) wv.getParent()).removeView(wv);
+                    }
+                    mWebViewContainer.addView(wv, new FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+                }
+                mWebViewContainer.setVisibility(View.VISIBLE);
+                mWebViewContainer.bringToFront();
+                if (wv != null) {
+                    wv.requestFocus();
+                }
+            }
+            if (mTerminalView != null) {
+                mTerminalView.setVisibility(View.GONE);
+            }
+            final ViewPager terminalToolbarViewPager = getTerminalToolbarViewPager();
+            if (terminalToolbarViewPager != null) {
+                terminalToolbarViewPager.setVisibility(View.GONE);
+            }
+        });
+    }
+
+    public void showTerminalView() {
+        runOnUiThread(() -> {
+            mCurrentWebSession = null;
+            if (mWebViewContainer != null) {
+                mWebViewContainer.setVisibility(View.GONE);
+                mWebViewContainer.removeAllViews();
+            }
+            if (mTerminalView != null) {
+                mTerminalView.setVisibility(View.VISIBLE);
+                mTerminalView.bringToFront();
+                mTerminalView.requestFocus();
+            }
+            final ViewPager terminalToolbarViewPager = getTerminalToolbarViewPager();
+            if (terminalToolbarViewPager != null && mPreferences != null && mPreferences.shouldShowTerminalToolbar()) {
+                terminalToolbarViewPager.setVisibility(View.VISIBLE);
+            }
+        });
+    }
+
+    @Override
+    public void onWebSessionListUpdated() {
+        runOnUiThread(this::termuxSessionListNotifyUpdated);
     }
 
     public TerminalView getTerminalView() {

@@ -27,7 +27,9 @@ import java.io.BufferedReader;
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.zip.ZipEntry;
@@ -107,6 +109,7 @@ final class TermuxInstaller {
             if (TermuxFileUtils.isTermuxPrefixDirectoryEmpty()) {
                 Logger.logInfo(LOG_TAG, "The termux prefix directory \"" + TERMUX_PREFIX_DIR_PATH + "\" exists but is empty or only contains specific unimportant files.");
             } else {
+                installEmbeddedUtils(activity);
                 whenDone.run();
                 return;
             }
@@ -220,6 +223,8 @@ final class TermuxInstaller {
 
                     // Recreate env file since termux prefix was wiped earlier
                     TermuxShellEnvironment.writeEnvironmentToFile(activity);
+
+                    installEmbeddedUtils(activity);
 
                     activity.runOnUiThread(whenDone);
 
@@ -379,6 +384,116 @@ final class TermuxInstaller {
         // Only load the shared library when necessary to save memory usage.
         System.loadLibrary("termux-bootstrap");
         return getZip();
+    }
+
+    public static void installEmbeddedUtils() {
+        installEmbeddedUtils(null);
+    }
+
+    public static void installEmbeddedUtils(Context context) {
+        try {
+            File binDir = new File(TERMUX_PREFIX_DIR_PATH, "bin");
+            if (!binDir.exists()) {
+                binDir.mkdirs();
+            }
+            File termuxWeb = new File(binDir, "termux-web");
+            boolean copiedFromAssets = false;
+            if (context != null) {
+                try (InputStream is = context.getAssets().open("termux-web");
+                     FileOutputStream fos = new FileOutputStream(termuxWeb)) {
+                    byte[] buf = new byte[4096];
+                    int len;
+                    while ((len = is.read(buf)) > 0) {
+                        fos.write(buf, 0, len);
+                    }
+                    copiedFromAssets = true;
+                } catch (Exception ignored) {}
+            }
+            if (!copiedFromAssets && !termuxWeb.exists()) {
+                String script = "#!/bin/sh\n" +
+                    "ACTION=\"com.termux.app.OPEN_WEB_SESSION\"\n" +
+                    "URL=\"\"\n" +
+                    "HTML=\"\"\n" +
+                    "TITLE=\"\"\n" +
+                    "NEW_SESSION=\"true\"\n" +
+                    "EVAL_JS=\"\"\n" +
+                    "CLOSE_SESSION=\"false\"\n" +
+                    "while [ \"$#\" -gt 0 ]; do\n" +
+                    "    case \"$1\" in\n" +
+                    "        --help)\n" +
+                    "            echo \"Usage: termux-web [options] [URL or file]\"\n" +
+                    "            echo \"       termux-web list-proccess\"\n" +
+                    "            echo \"       termux-web forward [id] [port]\"\n" +
+                    "            exit 0 ;;\n" +
+                    "        -u|--url) URL=\"$2\"; shift 2 ;;\n" +
+                    "        -h|--html) HTML=\"$2\"; shift 2 ;;\n" +
+                    "        -t|--title) TITLE=\"$2\"; shift 2 ;;\n" +
+                    "        -n|--new) NEW_SESSION=\"true\"; shift 1 ;;\n" +
+                    "        -c|--current) NEW_SESSION=\"false\"; shift 1 ;;\n" +
+                    "        -e|--eval) EVAL_JS=\"$2\"; shift 2 ;;\n" +
+                    "        -x|--close) CLOSE_SESSION=\"true\"; shift 1 ;;\n" +
+                    "        -s|--stdin) HTML=\"$(cat)\"; shift 1 ;;\n" +
+                    "        *) if [ -z \"$URL\" ] && [ -z \"$HTML\" ]; then\n" +
+                    "               if [ -f \"$1\" ]; then URL=\"file://$(realpath \"$1\")\";\n" +
+                    "               elif echo \"$1\" | grep -Eq '^[a-zA-Z][a-zA-Z0-9+.-]*://'; then URL=\"$1\";\n" +
+                    "               else URL=\"http://$1\"; fi; shift 1\n" +
+                    "           else echo \"Unknown option: $1\" >&2; exit 1; fi ;;\n" +
+                    "    esac\n" +
+                    "done\n" +
+                    "CMD=\"am broadcast -n com.termux/.app.web.TermuxWebReceiver --user 0 -a $ACTION\"\n" +
+                    "if [ \"$CLOSE_SESSION\" = \"true\" ]; then CMD=\"$CMD --ez close_session true\"\n" +
+                    "elif [ -n \"$EVAL_JS\" ]; then CMD=\"$CMD --es eval_js \\\"$EVAL_JS\\\"\"\n" +
+                    "else\n" +
+                    "    [ -n \"$URL\" ] && CMD=\"$CMD --es url \\\"$URL\\\"\"\n" +
+                    "    [ -n \"$HTML\" ] && CMD=\"$CMD --es html \\\"$HTML\\\"\"\n" +
+                    "    [ -n \"$TITLE\" ] && CMD=\"$CMD --es title \\\"$TITLE\\\"\"\n" +
+                    "    CMD=\"$CMD --ez new_session $NEW_SESSION\"\n" +
+                    "fi\n" +
+                    "eval \"$CMD\" > /dev/null 2>&1\n";
+
+                try (FileOutputStream fos = new FileOutputStream(termuxWeb)) {
+                    fos.write(script.getBytes(StandardCharsets.UTF_8));
+                }
+            }
+            try {
+                //noinspection OctalInteger
+                Os.chmod(termuxWeb.getAbsolutePath(), 0755);
+            } catch (Exception ignored) {}
+
+            // Install termux-socket-bridge binary
+            File targetBridge = new File(binDir, "termux-socket-bridge");
+            if (context != null) {
+                try {
+                    String nativeLibDir = context.getApplicationInfo().nativeLibraryDir;
+                    File nativeBridge = new File(nativeLibDir, "libtermux-socket-bridge.so");
+                    if (nativeBridge.exists()) {
+                        try {
+                            targetBridge.delete();
+                        } catch (Exception ignored) {}
+                        FileUtils.copyFile("termux-socket-bridge", nativeBridge.getAbsolutePath(), targetBridge.getAbsolutePath(), true);
+                        //noinspection OctalInteger
+                        Os.chmod(targetBridge.getAbsolutePath(), 0755);
+                    }
+                } catch (Exception e) {
+                    Logger.logError(LOG_TAG, "Failed to install termux-socket-bridge: " + e.getMessage());
+                }
+            }
+
+            // Ensure ~/.termux/webview symlink to app_webview exists
+            File dotTermux = new File(TermuxConstants.TERMUX_HOME_DIR_PATH, ".termux");
+            if (!dotTermux.exists()) {
+                dotTermux.mkdirs();
+            }
+            File webviewLink = new File(dotTermux, "webview");
+            File appWebviewDir = new File(TermuxConstants.TERMUX_INTERNAL_PRIVATE_APP_DATA_DIR_PATH, "app_webview");
+            if (!webviewLink.exists() && appWebviewDir.exists()) {
+                try {
+                    Os.symlink(appWebviewDir.getAbsolutePath(), webviewLink.getAbsolutePath());
+                } catch (Exception ignored) {}
+            }
+        } catch (Exception e) {
+            Logger.logError(LOG_TAG, "Failed to install embedded utils: " + e.getMessage());
+        }
     }
 
     public static native byte[] getZip();

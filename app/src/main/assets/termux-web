@@ -1,0 +1,468 @@
+#!/bin/sh
+# termux-web: CLI manager, dispatcher, and CDP forwarder for Termux Embedded WebView
+
+if [ -z "$TMPDIR" ] || [ ! -w "$TMPDIR" ]; then
+    if [ -d "/data/data/com.termux/files/usr/tmp" ]; then
+        export TMPDIR="/data/data/com.termux/files/usr/tmp"
+    else
+        export TMPDIR="/data/data/com.termux/cache"
+    fi
+fi
+case ":$PATH:" in
+    *":/data/data/com.termux/files/usr/bin:"*) ;;
+    *) export PATH="/data/data/com.termux/files/usr/bin:$PATH" ;;
+esac
+
+ACTION="com.termux.app.OPEN_WEB_SESSION"
+BRIDGE_BIN="/data/data/com.termux/files/usr/bin/termux-socket-bridge"
+FORWARD_DIR="/data/data/com.termux/files/home/.termux/forwards"
+
+# Terminal colors
+if [ -t 1 ]; then
+    C_RESET="\033[0m"
+    C_BOLD="\033[1m"
+    C_DIM="\033[2m"
+    C_CYAN="\033[1;36m"
+    C_GREEN="\033[1;32m"
+    C_YELLOW="\033[1;33m"
+    C_BLUE="\033[1;34m"
+    C_MAGENTA="\033[1;35m"
+    C_WHITE="\033[1;37m"
+else
+    C_RESET=""
+    C_BOLD=""
+    C_DIM=""
+    C_CYAN=""
+    C_GREEN=""
+    C_YELLOW=""
+    C_BLUE=""
+    C_MAGENTA=""
+    C_WHITE=""
+fi
+
+show_help() {
+    cat << 'EOF'
+Usage: termux-web <command> [options] [arguments]
+
+Commands:
+  <URL or file>                 Open a URL or local HTML file in embedded WebView
+  ls, list-process, ps          List active WebView processes and CDP sockets
+  forward [id] [port]           Forward TCP port (default: 9222) to WebView CDP socket
+  forward --list                List all active port forwards
+  forward --stop [port]         Stop port forwarding
+
+Options for opening web content:
+  -u, --url <url>            Load URL (http://, https://, file://)
+  -h, --html <html>          Render raw HTML string
+  -t, --title <title>        Set custom session title in drawer
+  -n, --new                  Open in a new web session (default)
+  -c, --current              Reuse active web session
+  -e, --eval <js>            Evaluate JavaScript in active web session
+  -x, --close                Close active web session
+  -d, --drawer               Open sessions drawer in Termux
+  -s, --stdin                Read HTML content from standard input
+  --help                     Show this help message
+
+Examples:
+  termux-web https://github.com
+  termux-web index.html
+  termux-web --title "Dashboard" --html "<h1>Termux Running</h1>"
+  termux-web list-process
+  termux-web forward 9222
+  termux-web forward 7901 9222
+  termux-web forward --stop 9222
+  curl -s http://127.0.0.1:9222/json
+EOF
+}
+
+find_termux_pid() {
+    # Method 1: pidof com.termux
+    PID=$(pidof com.termux 2>/dev/null | awk '{print $1}')
+    if [ -n "$PID" ]; then
+        echo "$PID"
+        return 0
+    fi
+
+    # Method 2: pgrep com.termux
+    PID=$(pgrep -f "com.termux$" 2>/dev/null | head -n 1)
+    if [ -n "$PID" ]; then
+        echo "$PID"
+        return 0
+    fi
+
+    # Method 3: ps search
+    PID=$(ps -ef 2>/dev/null | grep -E '[c]om.termux$' | awk '{print $2}' | head -n 1)
+    if [ -n "$PID" ]; then
+        echo "$PID"
+        return 0
+    fi
+
+    return 1
+}
+
+cmd_list_processes() {
+    COUNT=0
+    APP_PID=$(find_termux_pid)
+
+    printf "${C_BOLD}${C_CYAN}WebView CDP Targets${C_RESET}\n"
+
+    if [ -n "$APP_PID" ]; then
+        SOCKET="webview_devtools_remote_${APP_PID}"
+        COUNT=$((COUNT + 1))
+        printf " ${C_GREEN}●${C_RESET} ${C_BOLD}com.termux${C_RESET} ${C_GREEN}ONLINE${C_RESET}\n"
+        printf "   ${C_DIM}├─${C_RESET} PID     ${C_CYAN}%s${C_RESET}\n" "$APP_PID"
+        printf "   ${C_DIM}├─${C_RESET} Socket  ${C_DIM}@%s${C_RESET}\n" "$SOCKET"
+        printf "   ${C_DIM}└─${C_RESET} Bridge  ${C_YELLOW}termux-web forward %s 9222${C_RESET}\n" "$APP_PID"
+    fi
+
+    # Scan for any additional visible processes under user UID
+    for p in $(pgrep -u "$(id -u)" 2>/dev/null); do
+        if [ "$p" != "$APP_PID" ] && [ "$p" != "$$" ]; then
+            CMDLINE=$(tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null)
+            case "$CMDLINE" in
+                *termux-socket-bridge*)
+                    ;;
+                *webview*|*chrome*|*browser*)
+                    SOCKET="webview_devtools_remote_${p}"
+                    APP_NAME="${CMDLINE%% *}"
+                    APP_NAME="${APP_NAME##*/}"
+                    COUNT=$((COUNT + 1))
+                    printf "\n ${C_CYAN}●${C_RESET} ${C_BOLD}%s${C_RESET} ${C_CYAN}DETECTED${C_RESET}\n" "$APP_NAME"
+                    printf "   ${C_DIM}├─${C_RESET} PID     ${C_CYAN}%s${C_RESET}\n" "$p"
+                    printf "   ${C_DIM}├─${C_RESET} Socket  ${C_DIM}@%s${C_RESET}\n" "$SOCKET"
+                    printf "   ${C_DIM}└─${C_RESET} Bridge  ${C_YELLOW}termux-web forward %s 9222${C_RESET}\n" "$p"
+                    ;;
+            esac
+        fi
+    done
+
+    if [ "$COUNT" -eq 0 ]; then
+        printf " ${C_DIM}○ No active WebView CDP processes found.${C_RESET}\n"
+        printf "   ${C_DIM}Open a session: ${C_YELLOW}termux-web https://example.com${C_RESET}\n"
+    fi
+
+    # Check for active live CDP forwards
+    HEADER_PRINTED=0
+    for f in "$FORWARD_DIR"/*.info; do
+        if [ -f "$f" ]; then
+            READ_PID=$(awk '{print $1}' "$f")
+            READ_PORT=$(awk '{print $2}' "$f")
+            READ_SOCK=$(awk '{print $3}' "$f")
+            if [ -n "$READ_PID" ] && kill -0 "$READ_PID" 2>/dev/null; then
+                if [ "$HEADER_PRINTED" -eq 0 ]; then
+                    printf "\n${C_BOLD}${C_MAGENTA}Active CDP Bridges${C_RESET}\n"
+                    HEADER_PRINTED=1
+                fi
+                printf " ${C_GREEN}⚡${C_RESET} ${C_BOLD}http://127.0.0.1:%s${C_RESET} ${C_DIM}→${C_RESET} ${C_CYAN}%s${C_RESET}\n" "$READ_PORT" "$READ_SOCK"
+                printf "   ${C_DIM}├─${C_RESET} Bridge PID ${C_DIM}%s${C_RESET}\n" "$READ_PID"
+                printf "   ${C_DIM}├─${C_RESET} Test       ${C_CYAN}curl -s http://127.0.0.1:%s/json${C_RESET}\n" "$READ_PORT"
+                printf "   ${C_DIM}└─${C_RESET} Stop       ${C_YELLOW}termux-web forward --stop %s${C_RESET}\n" "$READ_PORT"
+            else
+                rm -f "$f" "$FORWARD_DIR/${READ_PORT}.pid" 2>/dev/null
+            fi
+        fi
+    done
+    printf "\n"
+}
+
+stop_bridge_on_port() {
+    TARGET_PORT="$1"
+    for p in $(pgrep -f "termux-socket-bridge" 2>/dev/null); do
+        CMD=$(tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null)
+        case "$CMD" in
+            *" $TARGET_PORT "*)
+                kill -9 "$p" 2>/dev/null
+                ;;
+        esac
+    done
+    if [ -f "$FORWARD_DIR/${TARGET_PORT}.pid" ]; then
+        PID=$(cat "$FORWARD_DIR/${TARGET_PORT}.pid")
+        kill -9 "$PID" 2>/dev/null
+        rm -f "$FORWARD_DIR/${TARGET_PORT}.pid" "$FORWARD_DIR/${TARGET_PORT}.info"
+    fi
+}
+
+cmd_forward() {
+    mkdir -p "$FORWARD_DIR"
+
+    if [ "$1" = "--list" ] || [ "$1" = "-l" ]; then
+        FOUND=0
+        for f in "$FORWARD_DIR"/*.info; do
+            if [ -f "$f" ]; then
+                READ_PID=$(awk '{print $1}' "$f")
+                READ_PORT=$(awk '{print $2}' "$f")
+                READ_SOCK=$(awk '{print $3}' "$f")
+                if kill -0 "$READ_PID" 2>/dev/null; then
+                    if [ "$FOUND" -eq 0 ]; then
+                        printf "${C_BOLD}${C_MAGENTA}Active CDP Bridges${C_RESET}\n"
+                    fi
+                    printf " ${C_GREEN}⚡${C_RESET} ${C_BOLD}http://127.0.0.1:%s${C_RESET} ${C_DIM}→${C_RESET} ${C_CYAN}%s${C_RESET}\n" "$READ_PORT" "$READ_SOCK"
+                    printf "   ${C_DIM}├─${C_RESET} Bridge PID ${C_DIM}%s${C_RESET}\n" "$READ_PID"
+                    printf "   ${C_DIM}├─${C_RESET} Test       ${C_CYAN}curl -s http://127.0.0.1:%s/json${C_RESET}\n" "$READ_PORT"
+                    printf "   ${C_DIM}└─${C_RESET} Stop       ${C_YELLOW}termux-web forward --stop %s${C_RESET}\n" "$READ_PORT"
+                    FOUND=1
+                else
+                    rm -f "$f" "$FORWARD_DIR/${READ_PORT}.pid" 2>/dev/null
+                fi
+            fi
+        done
+        if [ "$FOUND" -eq 0 ]; then
+            printf "${C_DIM}No active CDP bridges running.${C_RESET}\n"
+        fi
+        return 0
+    fi
+
+    if [ "$1" = "--stop" ]; then
+        TARGET_PORT="$2"
+        if [ -n "$TARGET_PORT" ]; then
+            stop_bridge_on_port "$TARGET_PORT"
+            echo "Stopped forward on port $TARGET_PORT"
+        else
+            for pidf in "$FORWARD_DIR"/*.pid; do
+                if [ -f "$pidf" ]; then
+                    PORT_NUM=$(basename "$pidf" .pid)
+                    stop_bridge_on_port "$PORT_NUM"
+                    echo "Stopped forward on port $PORT_NUM"
+                fi
+            done
+        fi
+        return 0
+    fi
+
+    # Parse forward arguments: [id] [port] or [port]
+    TARGET_ID=""
+    PORT="9222"
+
+    if [ $# -ge 2 ]; then
+        TARGET_ID="$1"
+        PORT="$2"
+    elif [ $# -eq 1 ]; then
+        # If single argument is all digits and <= 65535, check if it's port or PID
+        case "$1" in
+            ''|*[!0-9]*)
+                TARGET_ID="$1"
+                PORT="9222"
+                ;;
+            *)
+                if [ "$1" -ge 1024 ] && [ "$1" -le 65535 ]; then
+                    PORT="$1"
+                    TARGET_ID=""
+                else
+                    TARGET_ID="$1"
+                    PORT="9222"
+                fi
+                ;;
+        esac
+    fi
+
+    # Resolve socket name
+    SOCKET=""
+    if [ -n "$TARGET_ID" ]; then
+        case "$TARGET_ID" in
+            @*)
+                SOCKET="${TARGET_ID#@}"
+                ;;
+            webview_devtools_remote_*)
+                SOCKET="$TARGET_ID"
+                ;;
+            *)
+                SOCKET="webview_devtools_remote_${TARGET_ID}"
+                ;;
+        esac
+    else
+        APP_PID=$(find_termux_pid)
+        if [ -z "$APP_PID" ]; then
+            echo "Error: Could not determine Termux PID. Is Termux running?" >&2
+            exit 1
+        fi
+        SOCKET="webview_devtools_remote_${APP_PID}"
+    fi
+
+    # Check if forward binary is available
+    if [ ! -x "$BRIDGE_BIN" ]; then
+        if [ -x "/data/data/com.termux/lib/libtermux-socket-bridge.so" ]; then
+            BRIDGE_BIN="/data/data/com.termux/lib/libtermux-socket-bridge.so"
+        else
+            APK_PATH=$(pm path com.termux 2>/dev/null | cut -d: -f2 | head -n 1)
+            if [ -n "$APK_PATH" ]; then
+                LIB_DIR="$(dirname "$APK_PATH")/lib"
+                NATIVE_LIB=$(ls "$LIB_DIR"/*/libtermux-socket-bridge.so 2>/dev/null | head -n 1)
+                if [ -n "$NATIVE_LIB" ] && [ -x "$NATIVE_LIB" ]; then
+                    BRIDGE_BIN="$NATIVE_LIB"
+                    cp "$NATIVE_LIB" "/data/data/com.termux/files/usr/bin/termux-socket-bridge" 2>/dev/null
+                    chmod 755 "/data/data/com.termux/files/usr/bin/termux-socket-bridge" 2>/dev/null
+                fi
+            fi
+            if [ ! -x "$BRIDGE_BIN" ] && command -v socat >/dev/null 2>&1; then
+                BRIDGE_BIN="socat"
+            fi
+        fi
+    fi
+
+    if [ ! -x "$BRIDGE_BIN" ] && [ "$BRIDGE_BIN" != "socat" ]; then
+        echo "Error: Socket bridge binary not found or not executable." >&2
+        echo "Expected: $BRIDGE_BIN" >&2
+        return 1
+    fi
+
+    # Stop any previous forward on this port
+    stop_bridge_on_port "$PORT"
+    sleep 0.3
+
+    echo "Establishing forward: 127.0.0.1:$PORT -> @$SOCKET ..."
+
+    if [ "$BRIDGE_BIN" = "socat" ]; then
+        socat TCP-LISTEN:"$PORT",fork,reuseaddr,bind=127.0.0.1 ABSTRACT-CONNECT:"$SOCKET" >/dev/null 2>&1 &
+        BRIDGE_PID=$!
+    else
+        BRIDGE_OUT=$("$BRIDGE_BIN" "$SOCKET" "$PORT" --daemon 2>&1)
+        BRIDGE_PID=$(echo "$BRIDGE_OUT" | sed -n 's/.*(PID: *\([0-9]*\)).*/\1/p')
+        if [ -z "$BRIDGE_PID" ]; then
+            sleep 0.5
+            for p in $(pgrep -f "termux-socket-bridge" 2>/dev/null); do
+                CMD=$(tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null)
+                case "$CMD" in
+                    *" $PORT "*) BRIDGE_PID="$p"; break ;;
+                esac
+            done
+        fi
+    fi
+
+    if [ -n "$BRIDGE_PID" ]; then
+        echo "$BRIDGE_PID" > "$FORWARD_DIR/${PORT}.pid"
+        printf "%s %s @%s\n" "$BRIDGE_PID" "$PORT" "$SOCKET" > "$FORWARD_DIR/${PORT}.info"
+    fi
+
+    sleep 1
+
+    # Verify if port is responding
+    STATUS_CHECK=""
+    if command -v curl >/dev/null 2>&1; then
+        STATUS_CHECK=$(curl -s --connect-timeout 2 "http://127.0.0.1:$PORT/json/version" 2>/dev/null)
+    fi
+
+    echo "✔ Forwarding established successfully!"
+    echo "  Local Port:     http://127.0.0.1:$PORT"
+    echo "  Target Socket:  @$SOCKET"
+    if [ -n "$STATUS_CHECK" ]; then
+        BROWSER_VER=$(echo "$STATUS_CHECK" | grep -o '"Browser": *"[^"]*"' | cut -d'"' -f4)
+        echo "  CDP Engine:     $BROWSER_VER"
+    fi
+    echo ""
+    echo "Test with:"
+    echo "  curl -s http://127.0.0.1:$PORT/json"
+}
+
+# --- Main Dispatcher ---
+
+case "$1" in
+    list-process|list-processes|list-proccess|ps|ls)
+        shift 1
+        cmd_list_processes "$@"
+        exit 0
+        ;;
+    forward)
+        shift 1
+        cmd_forward "$@"
+        exit 0
+        ;;
+esac
+
+# Regular web dispatch options
+URL=""
+HTML=""
+TITLE=""
+NEW_SESSION="true"
+EVAL_JS=""
+CLOSE_SESSION="false"
+OPEN_DRAWER="false"
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --help)
+            show_help
+            exit 0
+            ;;
+        -u|--url)
+            URL="$2"
+            shift 2
+            ;;
+        -h|--html)
+            HTML="$2"
+            shift 2
+            ;;
+        -t|--title)
+            TITLE="$2"
+            shift 2
+            ;;
+        -n|--new)
+            NEW_SESSION="true"
+            shift 1
+            ;;
+        -c|--current)
+            NEW_SESSION="false"
+            shift 1
+            ;;
+        -e|--eval)
+            EVAL_JS="$2"
+            shift 2
+            ;;
+        -x|--close)
+            CLOSE_SESSION="true"
+            shift 1
+            ;;
+        -d|--drawer)
+            OPEN_DRAWER="true"
+            shift 1
+            ;;
+        -s|--stdin)
+            HTML="$(cat)"
+            shift 1
+            ;;
+        *)
+            if [ -z "$URL" ] && [ -z "$HTML" ]; then
+                if [ -f "$1" ]; then
+                    URL="file://$(realpath "$1")"
+                elif echo "$1" | grep -Eq '^[a-zA-Z][a-zA-Z0-9+.-]*://'; then
+                    URL="$1"
+                else
+                    URL="http://$1"
+                fi
+                shift 1
+            else
+                echo "Unknown option: $1" >&2
+                show_help
+                exit 1
+            fi
+            ;;
+    esac
+done
+
+CMD="am broadcast -n com.termux/.app.web.TermuxWebReceiver --user 0 -a $ACTION"
+
+if [ "$CLOSE_SESSION" = "true" ]; then
+    CMD="$CMD --ez close_session true"
+elif [ "$OPEN_DRAWER" = "true" ]; then
+    CMD="$CMD --ez open_drawer true"
+elif [ -n "$EVAL_JS" ]; then
+    CMD="$CMD --es eval_js \"$EVAL_JS\""
+else
+    if [ -n "$URL" ]; then
+        CMD="$CMD --es url \"$URL\""
+    fi
+    if [ -n "$HTML" ]; then
+        CMD="$CMD --es html \"$HTML\""
+    fi
+    if [ -n "$TITLE" ]; then
+        CMD="$CMD --es title \"$TITLE\""
+    fi
+    CMD="$CMD --ez new_session $NEW_SESSION"
+fi
+
+eval "$CMD" > /dev/null 2>&1
+EOF_STATUS=$?
+
+if [ $EOF_STATUS -ne 0 ]; then
+    echo "Failed to dispatch to Termux WebView (exit code: $EOF_STATUS)" >&2
+    exit $EOF_STATUS
+fi
