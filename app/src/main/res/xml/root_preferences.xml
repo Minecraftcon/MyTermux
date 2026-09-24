@@ -7,6 +7,12 @@
         app:fragment="com.termux.app.fragments.settings.TermuxPreferencesFragment"/>
 
     <Preference
+        app:key="termux_web"
+        app:title="Web &amp; Browser"
+        app:summary="Browsing history, privacy, cache, and website data"
+        app:fragment="com.termux.app.fragments.settings.TermuxWebPreferencesFragment"/>
+
+    <Preference
         app:key="termux_api"
         app:title="@string/termux_api_preferences_title"
         app:summary="@string/termux_api_preferences_summary"

@@ -1,0 +1,50 @@
+<PreferenceScreen xmlns:app="http://schemas.android.com/apk/res-auto">
+
+    <PreferenceCategory
+        app:title="Browsing History">
+
+        <Preference
+            app:key="view_web_history"
+            app:title="View Browsing History"
+            app:summary="Search, open, or delete visited websites" />
+
+        <Preference
+            app:key="clear_web_history"
+            app:title="Clear Browsing History"
+            app:summary="Delete visited pages and search history" />
+
+    </PreferenceCategory>
+
+    <PreferenceCategory
+        app:title="Privacy &amp; Data">
+
+        <SwitchPreferenceCompat
+            app:key="web_save_history"
+            app:title="Save Browsing History"
+            app:summary="Record visited URLs and page titles"
+            app:defaultValue="true" />
+
+        <SwitchPreferenceCompat
+            app:key="web_clear_cache_on_exit"
+            app:title="Clear Cache on Exit"
+            app:summary="Automatically purge web cache when session ends"
+            app:defaultValue="false" />
+
+        <Preference
+            app:key="clear_web_cache_cookies"
+            app:title="Clear Cache &amp; Storage"
+            app:summary="Delete cached web pages, cookies, and local web storage" />
+
+    </PreferenceCategory>
+
+    <PreferenceCategory
+        app:title="Advanced">
+
+        <Preference
+            app:key="export_web_history"
+            app:title="Export History to JSON"
+            app:summary="Sync to ~/.termux/web_history.json" />
+
+    </PreferenceCategory>
+
+</PreferenceScreen>

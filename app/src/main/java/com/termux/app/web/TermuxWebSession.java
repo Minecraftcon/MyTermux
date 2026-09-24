@@ -19,6 +19,7 @@ import android.webkit.WebViewClient;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
+import com.termux.app.web.history.TermuxWebHistoryManager;
 import com.termux.shared.logger.Logger;
 
 import java.util.UUID;
@@ -34,6 +35,7 @@ public class TermuxWebSession {
         void onSessionClosed(@NonNull TermuxWebSession session);
     }
 
+    private final Context mContext;
     private final String mId;
     private String mTitle;
     private String mUrl;
@@ -43,6 +45,7 @@ public class TermuxWebSession {
 
     @SuppressLint("SetJavaScriptEnabled")
     public TermuxWebSession(@NonNull Context context, @Nullable String initialUrl, @Nullable String customTitle) {
+        this.mContext = context.getApplicationContext();
         this.mId = UUID.randomUUID().toString();
         this.mTitle = TextUtils.isEmpty(customTitle) ? "Web View" : customTitle;
         this.mUrl = TextUtils.isEmpty(initialUrl) ? "about:blank" : initialUrl;
@@ -103,6 +106,7 @@ public class TermuxWebSession {
                         mCallback.onTitleChanged(TermuxWebSession.this, pageTitle);
                     }
                 }
+                TermuxWebHistoryManager.getInstance(mContext).recordVisit(url, mTitle);
             }
 
             @Override
@@ -119,6 +123,9 @@ public class TermuxWebSession {
                     mTitle = title;
                     if (mCallback != null) {
                         mCallback.onTitleChanged(TermuxWebSession.this, title);
+                    }
+                    if (mUrl != null) {
+                        TermuxWebHistoryManager.getInstance(mContext).recordVisit(mUrl, title);
                     }
                 }
             }

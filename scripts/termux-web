@@ -50,6 +50,7 @@ Commands:
   forward [id] [port]           Forward TCP port (default: 9222) to WebView CDP socket
   forward --list                List all active port forwards
   forward --stop [port]         Stop port forwarding
+  history [options]             View, search, or clear browsing history
 
 Options for opening web content:
   -u, --url <url>            Load URL (http://, https://, file://)
@@ -67,10 +68,11 @@ Examples:
   termux-web https://github.com
   termux-web index.html
   termux-web --title "Dashboard" --html "<h1>Termux Running</h1>"
+  termux-web history
+  termux-web history --search "dashboard"
+  termux-web history --clear
   termux-web list-process
   termux-web forward 9222
-  termux-web forward 7901 9222
-  termux-web forward --stop 9222
   curl -s http://127.0.0.1:9222/json
 EOF
 }
@@ -353,6 +355,138 @@ cmd_forward() {
     echo "  curl -s http://127.0.0.1:$PORT/json"
 }
 
+cmd_history() {
+    HIST_FILE="$HOME/.termux/web_history.json"
+    if [ ! -f "$HIST_FILE" ]; then
+        if [ -f "/data/data/com.termux/files/web_history.json" ]; then
+            HIST_FILE="/data/data/com.termux/files/web_history.json"
+        fi
+    fi
+
+    SEARCH_TERM=""
+    LIMIT=20
+    OUTPUT_JSON="false"
+    CLEAR="false"
+    OPEN_IDX=""
+
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --json|-j)
+                OUTPUT_JSON="true"
+                shift 1
+                ;;
+            --clear|-c)
+                CLEAR="true"
+                shift 1
+                ;;
+            --search|-s)
+                SEARCH_TERM="$2"
+                shift 2
+                ;;
+            -n|--limit)
+                LIMIT="$2"
+                shift 2
+                ;;
+            open|load)
+                OPEN_IDX="$2"
+                shift 2
+                ;;
+            *)
+                if [ -z "$SEARCH_TERM" ]; then
+                    SEARCH_TERM="$1"
+                    shift 1
+                else
+                    shift 1
+                fi
+                ;;
+        esac
+    done
+
+    if [ "$CLEAR" = "true" ]; then
+        echo "[]" > "$HIST_FILE"
+        echo "${C_GREEN}✔ Browsing history cleared.${C_RESET}"
+        return 0
+    fi
+
+    if [ ! -f "$HIST_FILE" ] || [ ! -s "$HIST_FILE" ]; then
+        if [ "$OUTPUT_JSON" = "true" ]; then
+            echo "[]"
+        else
+            echo "${C_DIM}No browsing history recorded yet.${C_RESET}"
+        fi
+        return 0
+    fi
+
+    if [ "$OUTPUT_JSON" = "true" ]; then
+        cat "$HIST_FILE"
+        return 0
+    fi
+
+    if command -v python3 >/dev/null 2>&1; then
+        RES=$(python3 -c "
+import json, sys, os, time
+
+path = '$HIST_FILE'
+query = '''$SEARCH_TERM'''.lower().strip()
+limit = int('$LIMIT')
+open_idx = '$OPEN_IDX'
+
+try:
+    with open(path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+except Exception:
+    data = []
+
+if query:
+    data = [x for x in data if query in x.get('title','').lower() or query in x.get('url','').lower()]
+
+if open_idx:
+    try:
+        idx = int(open_idx) - 1
+        if 0 <= idx < len(data):
+            print('OPEN:' + data[idx].get('url', ''))
+            sys.exit(0)
+        else:
+            print('Error: Index out of range', file=sys.stderr)
+            sys.exit(1)
+    except ValueError:
+        print('Error: Invalid index', file=sys.stderr)
+        sys.exit(1)
+
+if not data:
+    print('\033[2mNo matching history entries found.\033[0m')
+    sys.exit(0)
+
+print('\033[1;36m' + '  #  ' + 'TIME              ' + 'TITLE' + ' ' * 27 + 'URL' + '\033[0m')
+print('\033[2m' + '  ─  ' + '────────────────  ' + '──────────────────────────────  ' + '──────────────────────────────' + '\033[0m')
+
+for i, item in enumerate(data[:limit], start=1):
+    ts = item.get('timestamp', 0) / 1000.0
+    time_str = time.strftime('%Y-%m-%d %H:%M', time.localtime(ts)) if ts > 0 else 'Unknown'
+    
+    title = item.get('title', '')
+    if len(title) > 30:
+        title = title[:28] + '…'
+    url = item.get('url', '')
+    if len(url) > 42:
+        url = url[:40] + '…'
+    
+    print(f'  \033[1;33m{i:<3}\033[0m\033[2m{time_str:<18}\033[0m\033[1;37m{title:<32}\033[0m\033[36m{url}\033[0m')
+")
+        STATUS=$?
+        if [ $STATUS -eq 0 ] && echo "$RES" | grep -q '^OPEN:'; then
+            TARGET=$(echo "$RES" | sed 's/^OPEN://')
+            "$0" "$TARGET"
+            return $?
+        else
+            echo "$RES"
+            return $STATUS
+        fi
+    else
+        grep -o '"url": *"[^"]*"' "$HIST_FILE" | cut -d'"' -f4 | head -n "$LIMIT"
+    fi
+}
+
 # --- Main Dispatcher ---
 
 case "$1" in
@@ -364,6 +498,11 @@ case "$1" in
     forward)
         shift 1
         cmd_forward "$@"
+        exit 0
+        ;;
+    history|hist)
+        shift 1
+        cmd_history "$@"
         exit 0
         ;;
 esac
