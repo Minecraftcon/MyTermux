@@ -20,6 +20,13 @@ import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
+import android.view.KeyEvent;
+import android.view.animation.AccelerateInterpolator;
+import android.view.animation.DecelerateInterpolator;
+import android.view.animation.OvershootInterpolator;
+import android.view.inputmethod.EditorInfo;
+import android.view.inputmethod.InputMethodManager;
+import android.util.TypedValue;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.ImageButton;
@@ -87,6 +94,18 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
 
     private FrameLayout mWebViewContainer;
     private TermuxWebSession mCurrentWebSession;
+    private FrameLayout mWebViewControlsOverlay;
+    private View mWebViewPillBar;
+    private View mWebViewUrlBar;
+    private ImageButton mWebViewInfoFab;
+    private EditText mWebViewUrlEditText;
+    private ImageButton mWebViewUrlGoButton;
+    private ImageButton mWebViewBtnPrevious;
+    private ImageButton mWebViewBtnNext;
+    private ImageButton mWebViewBtnReload;
+    private ImageButton mWebViewBtnLink;
+    private ImageButton mWebViewBtnPanel;
+    private ImageButton mWebViewBtnClose;
 
     /**
      * The connection to the {@link TermuxService}. Requested in {@link #onCreate(Bundle)} with a call to
@@ -508,6 +527,7 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         mTerminalView.setTerminalViewClient(mTermuxTerminalViewClient);
 
         mWebViewContainer = findViewById(R.id.web_view_container);
+        setupWebViewControls();
 
         if (mTermuxTerminalViewClient != null)
             mTermuxTerminalViewClient.onCreate();
@@ -622,6 +642,10 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     public void onBackPressed() {
         if (getDrawer().isDrawerOpen(Gravity.LEFT)) {
             getDrawer().closeDrawers();
+        } else if (isWebViewUrlBarVisible()) {
+            hideWebViewUrlBar();
+        } else if (isWebViewPillBarVisible()) {
+            collapseWebViewPillBar();
         } else if (mCurrentWebSession != null && mCurrentWebSession.canGoBack()) {
             mCurrentWebSession.goBack();
         } else if (mCurrentWebSession != null) {
@@ -937,6 +961,22 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                     wv.requestFocus();
                 }
             }
+            if (mWebViewControlsOverlay != null) {
+                mWebViewControlsOverlay.setVisibility(View.VISIBLE);
+                mWebViewControlsOverlay.bringToFront();
+                if (mWebViewInfoFab != null) {
+                    mWebViewInfoFab.setVisibility(View.VISIBLE);
+                    mWebViewInfoFab.setScaleX(1f);
+                    mWebViewInfoFab.setScaleY(1f);
+                    mWebViewInfoFab.setAlpha(1f);
+                }
+                if (mWebViewPillBar != null) {
+                    mWebViewPillBar.setVisibility(View.GONE);
+                }
+                if (mWebViewUrlBar != null) {
+                    mWebViewUrlBar.setVisibility(View.GONE);
+                }
+            }
             if (mTerminalView != null) {
                 mTerminalView.setVisibility(View.GONE);
             }
@@ -950,6 +990,12 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     public void showTerminalView() {
         runOnUiThread(() -> {
             mCurrentWebSession = null;
+            if (mWebViewControlsOverlay != null) {
+                hideWebViewUrlBar();
+                mWebViewControlsOverlay.setVisibility(View.GONE);
+                if (mWebViewPillBar != null) mWebViewPillBar.setVisibility(View.GONE);
+                if (mWebViewUrlBar != null) mWebViewUrlBar.setVisibility(View.GONE);
+            }
             if (mWebViewContainer != null) {
                 mWebViewContainer.setVisibility(View.GONE);
                 mWebViewContainer.removeAllViews();
@@ -964,6 +1010,238 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
                 terminalToolbarViewPager.setVisibility(View.VISIBLE);
             }
         });
+    }
+
+    private void setupWebViewControls() {
+        mWebViewControlsOverlay = findViewById(R.id.web_view_controls_overlay);
+        mWebViewPillBar = findViewById(R.id.web_view_pill_bar);
+        mWebViewUrlBar = findViewById(R.id.web_view_url_bar);
+        mWebViewInfoFab = findViewById(R.id.web_view_info_fab);
+        mWebViewUrlEditText = findViewById(R.id.web_view_url_edit_text);
+        mWebViewUrlGoButton = findViewById(R.id.web_view_url_go_button);
+        mWebViewBtnPrevious = findViewById(R.id.web_view_btn_previous);
+        mWebViewBtnNext = findViewById(R.id.web_view_btn_next);
+        mWebViewBtnReload = findViewById(R.id.web_view_btn_reload);
+        mWebViewBtnLink = findViewById(R.id.web_view_btn_link);
+        mWebViewBtnPanel = findViewById(R.id.web_view_btn_panel);
+        mWebViewBtnClose = findViewById(R.id.web_view_btn_close);
+
+        if (mWebViewInfoFab != null) {
+            mWebViewInfoFab.setOnClickListener(v -> expandWebViewPillBar());
+        }
+
+        if (mWebViewBtnClose != null) {
+            mWebViewBtnClose.setOnClickListener(v -> collapseWebViewPillBar());
+        }
+
+        if (mWebViewBtnPrevious != null) {
+            mWebViewBtnPrevious.setOnClickListener(v -> {
+                animateButtonBounce(v);
+                if (mCurrentWebSession != null && mCurrentWebSession.canGoBack()) {
+                    mCurrentWebSession.goBack();
+                }
+            });
+        }
+
+        if (mWebViewBtnNext != null) {
+            mWebViewBtnNext.setOnClickListener(v -> {
+                animateButtonBounce(v);
+                if (mCurrentWebSession != null && mCurrentWebSession.canGoForward()) {
+                    mCurrentWebSession.goForward();
+                }
+            });
+        }
+
+        if (mWebViewBtnReload != null) {
+            mWebViewBtnReload.setOnClickListener(v -> {
+                v.animate().rotationBy(360f).setDuration(400)
+                    .setInterpolator(new DecelerateInterpolator()).start();
+                if (mCurrentWebSession != null) {
+                    mCurrentWebSession.reload();
+                }
+            });
+        }
+
+        if (mWebViewBtnPanel != null) {
+            mWebViewBtnPanel.setOnClickListener(v -> {
+                animateButtonBounce(v);
+                if (getDrawer() != null) {
+                    if (getDrawer().isDrawerOpen(Gravity.LEFT)) {
+                        getDrawer().closeDrawers();
+                    } else {
+                        getDrawer().openDrawer(Gravity.LEFT);
+                    }
+                }
+            });
+        }
+
+        if (mWebViewBtnLink != null) {
+            mWebViewBtnLink.setOnClickListener(v -> {
+                animateButtonBounce(v);
+                toggleWebViewUrlBar();
+            });
+        }
+
+        if (mWebViewUrlGoButton != null) {
+            mWebViewUrlGoButton.setOnClickListener(v -> {
+                animateButtonBounce(v);
+                navigateToEnteredUrl();
+            });
+        }
+
+        if (mWebViewUrlEditText != null) {
+            mWebViewUrlEditText.setOnEditorActionListener((v, actionId, event) -> {
+                if (actionId == EditorInfo.IME_ACTION_GO ||
+                    (event != null && event.getKeyCode() == KeyEvent.KEYCODE_ENTER && event.getAction() == KeyEvent.ACTION_DOWN)) {
+                    navigateToEnteredUrl();
+                    return true;
+                }
+                return false;
+            });
+        }
+    }
+
+    private void expandWebViewPillBar() {
+        if (mWebViewInfoFab == null || mWebViewPillBar == null) return;
+        mWebViewInfoFab.animate()
+            .scaleX(0f)
+            .scaleY(0f)
+            .alpha(0f)
+            .setDuration(160)
+            .setInterpolator(new AccelerateInterpolator())
+            .withEndAction(() -> {
+                mWebViewInfoFab.setVisibility(View.GONE);
+                mWebViewPillBar.setVisibility(View.VISIBLE);
+                mWebViewPillBar.setAlpha(0f);
+                mWebViewPillBar.setTranslationY(dpToPx(36));
+                mWebViewPillBar.setScaleX(0.85f);
+                mWebViewPillBar.setScaleY(0.85f);
+                mWebViewPillBar.animate()
+                    .alpha(1f)
+                    .translationY(0f)
+                    .scaleX(1f)
+                    .scaleY(1f)
+                    .setDuration(260)
+                    .setInterpolator(new OvershootInterpolator(1.2f))
+                    .start();
+            })
+            .start();
+    }
+
+    private void collapseWebViewPillBar() {
+        if (mWebViewPillBar == null || mWebViewInfoFab == null) return;
+        hideWebViewUrlBar();
+        mWebViewPillBar.animate()
+            .alpha(0f)
+            .translationY(dpToPx(36))
+            .scaleX(0.85f)
+            .scaleY(0.85f)
+            .setDuration(180)
+            .setInterpolator(new AccelerateInterpolator())
+            .withEndAction(() -> {
+                mWebViewPillBar.setVisibility(View.GONE);
+                mWebViewInfoFab.setVisibility(View.VISIBLE);
+                mWebViewInfoFab.setScaleX(0f);
+                mWebViewInfoFab.setScaleY(0f);
+                mWebViewInfoFab.setAlpha(0f);
+                mWebViewInfoFab.animate()
+                    .scaleX(1f)
+                    .scaleY(1f)
+                    .alpha(1f)
+                    .setDuration(220)
+                    .setInterpolator(new OvershootInterpolator(1.3f))
+                    .start();
+            })
+            .start();
+    }
+
+    private void toggleWebViewUrlBar() {
+        if (mWebViewUrlBar == null) return;
+        if (mWebViewUrlBar.getVisibility() == View.VISIBLE) {
+            hideWebViewUrlBar();
+        } else {
+            showWebViewUrlBar();
+        }
+    }
+
+    private void showWebViewUrlBar() {
+        if (mWebViewUrlBar == null || mWebViewUrlEditText == null) return;
+        String currentUrl = "";
+        if (mCurrentWebSession != null && mCurrentWebSession.getWebView() != null) {
+            currentUrl = mCurrentWebSession.getWebView().getUrl();
+        }
+        if (currentUrl == null) currentUrl = "";
+        mWebViewUrlEditText.setText(currentUrl);
+        mWebViewUrlEditText.selectAll();
+
+        mWebViewUrlBar.setVisibility(View.VISIBLE);
+        mWebViewUrlBar.setAlpha(0f);
+        mWebViewUrlBar.setTranslationY(dpToPx(24));
+        mWebViewUrlBar.animate()
+            .alpha(1f)
+            .translationY(0f)
+            .setDuration(220)
+            .setInterpolator(new DecelerateInterpolator())
+            .start();
+
+        mWebViewUrlEditText.requestFocus();
+        InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
+        if (imm != null) {
+            imm.showSoftInput(mWebViewUrlEditText, InputMethodManager.SHOW_IMPLICIT);
+        }
+    }
+
+    private void hideWebViewUrlBar() {
+        if (mWebViewUrlBar == null || mWebViewUrlBar.getVisibility() != View.VISIBLE) return;
+        InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
+        if (imm != null && mWebViewUrlEditText != null) {
+            imm.hideSoftInputFromWindow(mWebViewUrlEditText.getWindowToken(), 0);
+        }
+        mWebViewUrlBar.animate()
+            .alpha(0f)
+            .translationY(dpToPx(24))
+            .setDuration(160)
+            .setInterpolator(new AccelerateInterpolator())
+            .withEndAction(() -> mWebViewUrlBar.setVisibility(View.GONE))
+            .start();
+    }
+
+    private void navigateToEnteredUrl() {
+        if (mWebViewUrlEditText == null || mCurrentWebSession == null || mCurrentWebSession.getWebView() == null) return;
+        String raw = mWebViewUrlEditText.getText().toString().trim();
+        if (raw.isEmpty()) return;
+        String targetUrl = raw;
+        if (!targetUrl.startsWith("http://") && !targetUrl.startsWith("https://") &&
+            !targetUrl.startsWith("file://") && !targetUrl.startsWith("javascript:")) {
+            if (targetUrl.startsWith("localhost") || targetUrl.startsWith("127.0.0.1") ||
+                targetUrl.matches("^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}(:\\d+)?.*") ||
+                targetUrl.matches("^[a-zA-Z0-9.-]+:\\d+.*")) {
+                targetUrl = "http://" + targetUrl;
+            } else {
+                targetUrl = "https://" + targetUrl;
+            }
+        }
+        hideWebViewUrlBar();
+        mCurrentWebSession.getWebView().loadUrl(targetUrl);
+    }
+
+    private void animateButtonBounce(View view) {
+        if (view == null) return;
+        view.animate().scaleX(0.82f).scaleY(0.82f).setDuration(70)
+            .withEndAction(() -> view.animate().scaleX(1f).scaleY(1f).setDuration(100).start())
+            .start();
+    }
+
+    private float dpToPx(float dp) {
+        return TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, dp, getResources().getDisplayMetrics());
+    }
+
+    private boolean isWebViewUrlBarVisible() {
+        return mWebViewUrlBar != null && mWebViewUrlBar.getVisibility() == View.VISIBLE;
+    }
+
+    private boolean isWebViewPillBarVisible() {
+        return mWebViewPillBar != null && mWebViewPillBar.getVisibility() == View.VISIBLE;
     }
 
     @Override
