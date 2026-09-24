@@ -984,6 +984,11 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             if (terminalToolbarViewPager != null) {
                 terminalToolbarViewPager.setVisibility(View.GONE);
             }
+
+            DrawerLayout drawer = getDrawer();
+            if (drawer != null) {
+                drawer.setDrawerLockMode(DrawerLayout.LOCK_MODE_LOCKED_CLOSED, Gravity.LEFT);
+            }
         });
     }
 
@@ -1009,6 +1014,11 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             if (terminalToolbarViewPager != null && mPreferences != null && mPreferences.shouldShowTerminalToolbar()) {
                 terminalToolbarViewPager.setVisibility(View.VISIBLE);
             }
+
+            DrawerLayout drawer = getDrawer();
+            if (drawer != null) {
+                drawer.setDrawerLockMode(DrawerLayout.LOCK_MODE_UNLOCKED, Gravity.LEFT);
+            }
         });
     }
 
@@ -1025,6 +1035,25 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         mWebViewBtnLink = findViewById(R.id.web_view_btn_link);
         mWebViewBtnPanel = findViewById(R.id.web_view_btn_panel);
         mWebViewBtnClose = findViewById(R.id.web_view_btn_close);
+
+        DrawerLayout drawer = getDrawer();
+        if (drawer != null) {
+            drawer.addDrawerListener(new DrawerLayout.SimpleDrawerListener() {
+                @Override
+                public void onDrawerClosed(@NonNull View drawerView) {
+                    if (isWebSessionActive()) {
+                        drawer.setDrawerLockMode(DrawerLayout.LOCK_MODE_LOCKED_CLOSED, Gravity.LEFT);
+                    }
+                }
+
+                @Override
+                public void onDrawerOpened(@NonNull View drawerView) {
+                    if (isWebSessionActive()) {
+                        drawer.setDrawerLockMode(DrawerLayout.LOCK_MODE_UNLOCKED, Gravity.LEFT);
+                    }
+                }
+            });
+        }
 
         if (mWebViewInfoFab != null) {
             mWebViewInfoFab.setOnClickListener(v -> expandWebViewPillBar());
