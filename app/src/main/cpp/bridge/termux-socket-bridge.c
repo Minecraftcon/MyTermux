@@ -86,9 +86,62 @@ done:
     close(unix_fd);
 }
 
+static int send_unix_command(const char *sock_path, const char *cmd) {
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) return 1;
+
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+
+    socklen_t addr_len;
+    if (sock_path[0] == '@') {
+        addr.sun_path[0] = '\0';
+        size_t len = strlen(sock_path + 1);
+        if (len > sizeof(addr.sun_path) - 2) len = sizeof(addr.sun_path) - 2;
+        memcpy(addr.sun_path + 1, sock_path + 1, len);
+        addr_len = (socklen_t)(sizeof(sa_family_t) + 1 + len);
+    } else {
+        strncpy(addr.sun_path, sock_path, sizeof(addr.sun_path) - 1);
+        addr_len = sizeof(addr);
+    }
+
+    if (connect(fd, (struct sockaddr *)&addr, addr_len) < 0) {
+        close(fd);
+        return 2;
+    }
+
+    size_t cmd_len = strlen(cmd);
+    ssize_t written = 0;
+    while (written < (ssize_t)cmd_len) {
+        ssize_t w = write(fd, cmd + written, cmd_len - written);
+        if (w <= 0) {
+            close(fd);
+            return 3;
+        }
+        written += w;
+    }
+
+    shutdown(fd, SHUT_WR);
+
+    char resp[512];
+    ssize_t n = read(fd, resp, sizeof(resp) - 1);
+    close(fd);
+    if (n > 0) {
+        resp[n] = '\0';
+        return atoi(resp);
+    }
+    return 0;
+}
+
 int main(int argc, char *argv[]) {
+    if (argc >= 4 && strcmp(argv[1], "send") == 0) {
+        return send_unix_command(argv[2], argv[3]);
+    }
+
     if (argc < 3) {
         fprintf(stderr, "Usage: %s <abstract_socket_name> <tcp_port> [--daemon]\n", argv[0]);
+        fprintf(stderr, "   or: %s send <socket_path> <command_string>\n", argv[0]);
         return 1;
     }
 

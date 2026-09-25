@@ -560,13 +560,18 @@ while [ "$#" -gt 0 ]; do
             ;;
         *)
             if [ -z "$URL" ] && [ -z "$HTML" ]; then
-                if [ -f "$1" ]; then
-                    URL="file://$(realpath "$1")"
-                elif echo "$1" | grep -Eq '^[a-zA-Z][a-zA-Z0-9+.-]*://'; then
-                    URL="$1"
-                else
-                    URL="http://$1"
-                fi
+                case "$1" in
+                    *://*)
+                        URL="$1"
+                        ;;
+                    *)
+                        if [ -f "$1" ]; then
+                            URL="file://$(realpath "$1")"
+                        else
+                            URL="http://$1"
+                        fi
+                        ;;
+                esac
                 shift 1
             else
                 echo "Unknown option: $1" >&2
@@ -577,27 +582,66 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
-CMD="am broadcast -n com.termux/.app.web.TermuxWebReceiver --user 0 -a $ACTION"
-
-if [ "$CLOSE_SESSION" = "true" ]; then
-    CMD="$CMD --ez close_session true"
-elif [ "$OPEN_DRAWER" = "true" ]; then
-    CMD="$CMD --ez open_drawer true"
-elif [ -n "$EVAL_JS" ]; then
-    CMD="$CMD --es eval_js \"$EVAL_JS\""
-else
-    if [ -n "$URL" ]; then
-        CMD="$CMD --es url \"$URL\""
-    fi
-    if [ -n "$HTML" ]; then
-        CMD="$CMD --es html \"$HTML\""
-    fi
-    if [ -n "$TITLE" ]; then
-        CMD="$CMD --es title \"$TITLE\""
-    fi
-    CMD="$CMD --ez new_session $NEW_SESSION"
+if [ -z "$URL" ] && [ -z "$HTML" ] && [ "$CLOSE_SESSION" != "true" ] && [ "$OPEN_DRAWER" != "true" ] && [ -z "$EVAL_JS" ]; then
+    show_help
+    exit 0
 fi
 
+AM_SOCK="/data/data/com.termux/files/apps/com.termux/termux-am/am.sock"
+AM_ARGS="broadcast -n com.termux/.app.web.TermuxWebReceiver --user 0 -a $ACTION"
+
+if [ "$CLOSE_SESSION" = "true" ]; then
+    AM_ARGS="$AM_ARGS --ez close_session true"
+elif [ "$OPEN_DRAWER" = "true" ]; then
+    AM_ARGS="$AM_ARGS --ez open_drawer true"
+elif [ -n "$EVAL_JS" ]; then
+    AM_ARGS="$AM_ARGS --es eval_js \"$EVAL_JS\""
+else
+    if [ -n "$URL" ]; then
+        AM_ARGS="$AM_ARGS --es url \"$URL\""
+    fi
+    if [ -n "$HTML" ]; then
+        AM_ARGS="$AM_ARGS --es html \"$HTML\""
+    fi
+    if [ -n "$TITLE" ]; then
+        AM_ARGS="$AM_ARGS --es title \"$TITLE\""
+    fi
+    AM_ARGS="$AM_ARGS --ez new_session $NEW_SESSION"
+fi
+
+# 1. Fast Path: Direct Termux AM local socket (< 10ms response, zero JVM overhead)
+if [ -S "$AM_SOCK" ]; then
+    if [ -x "$BRIDGE_BIN" ]; then
+        if "$BRIDGE_BIN" send "$AM_SOCK" "$AM_ARGS" 2>/dev/null; then
+            exit 0
+        fi
+    elif [ -x "/data/data/com.termux/files/usr/bin/termux-socket-bridge" ]; then
+        if "/data/data/com.termux/files/usr/bin/termux-socket-bridge" send "$AM_SOCK" "$AM_ARGS" 2>/dev/null; then
+            exit 0
+        fi
+    fi
+
+    if command -v python3 >/dev/null 2>&1; then
+        if python3 -c "
+import socket, sys
+try:
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.connect('$AM_SOCK')
+    s.sendall('''$AM_ARGS'''.encode())
+    s.shutdown(socket.SHUT_WR)
+    s.recv(1024)
+    s.close()
+    sys.exit(0)
+except Exception:
+    sys.exit(1)
+" 2>/dev/null; then
+            exit 0
+        fi
+    fi
+fi
+
+# 2. Fallback: Standard am command
+CMD="am $AM_ARGS"
 eval "$CMD" > /dev/null 2>&1
 EOF_STATUS=$?
 
