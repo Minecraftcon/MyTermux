@@ -124,11 +124,22 @@ static int send_unix_command(const char *sock_path, const char *cmd) {
 
     shutdown(fd, SHUT_WR);
 
-    char resp[512];
-    ssize_t n = read(fd, resp, sizeof(resp) - 1);
+    char resp[1024];
+    ssize_t total = 0;
+    ssize_t n;
+    while ((n = read(fd, resp + total, sizeof(resp) - 1 - total)) > 0) {
+        total += n;
+        if (total >= (ssize_t)(sizeof(resp) - 1)) {
+            // Drain remaining bytes if any to allow server clean EOF
+            char sink[512];
+            while (read(fd, sink, sizeof(sink)) > 0);
+            break;
+        }
+    }
     close(fd);
-    if (n > 0) {
-        resp[n] = '\0';
+
+    if (total > 0) {
+        resp[total] = '\0';
         return atoi(resp);
     }
     return 0;

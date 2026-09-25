@@ -629,7 +629,8 @@ try:
     s.connect('$AM_SOCK')
     s.sendall('''$AM_ARGS'''.encode())
     s.shutdown(socket.SHUT_WR)
-    s.recv(1024)
+    while s.recv(1024):
+        pass
     s.close()
     sys.exit(0)
 except Exception:
