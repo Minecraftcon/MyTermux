@@ -188,21 +188,36 @@
                             android:contentDescription="@null" />
                     </LinearLayout>
 
-                    <!-- Bottom Right Corner Info Icon (Very small, white border) -->
-                    <ImageButton
-                        android:id="@+id/web_view_info_fab"
-                        android:layout_width="32dp"
-                        android:layout_height="32dp"
+                    <!-- Bottom Right Corner Info Icon with Hold Progress Ring -->
+                    <FrameLayout
+                        android:id="@+id/web_view_info_container"
+                        android:layout_width="42dp"
+                        android:layout_height="42dp"
                         android:layout_gravity="bottom|end"
-                        android:layout_marginEnd="14dp"
-                        android:layout_marginBottom="14dp"
-                        android:background="@drawable/bg_webview_info_fab"
-                        android:src="@drawable/ic_lucide_info"
-                        android:padding="7dp"
-                        android:scaleType="fitCenter"
-                        app:tint="#FFFFFF"
-                        android:elevation="8dp"
-                        android:contentDescription="@null" />
+                        android:layout_marginEnd="9dp"
+                        android:layout_marginBottom="9dp"
+                        android:clipChildren="false"
+                        android:clipToPadding="false"
+                        android:elevation="8dp">
+
+                        <com.termux.app.web.HoldProgressRingView
+                            android:id="@+id/web_view_info_ring"
+                            android:layout_width="match_parent"
+                            android:layout_height="match_parent"
+                            android:visibility="invisible" />
+
+                        <ImageButton
+                            android:id="@+id/web_view_info_fab"
+                            android:layout_width="32dp"
+                            android:layout_height="32dp"
+                            android:layout_gravity="center"
+                            android:background="@drawable/bg_webview_info_fab"
+                            android:src="@drawable/ic_lucide_info"
+                            android:padding="7dp"
+                            android:scaleType="fitCenter"
+                            app:tint="#FFFFFF"
+                            android:contentDescription="@null" />
+                    </FrameLayout>
 
                 </FrameLayout>
 

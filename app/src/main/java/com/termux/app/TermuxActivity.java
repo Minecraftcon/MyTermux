@@ -17,14 +17,22 @@ import android.view.ContextMenu.ContextMenuInfo;
 import android.view.Gravity;
 import android.view.Menu;
 import android.view.MenuItem;
+import android.animation.Animator;
+import android.animation.AnimatorListenerAdapter;
+import android.animation.ValueAnimator;
+import android.view.HapticFeedbackConstants;
+import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewConfiguration;
 import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.view.KeyEvent;
 import android.view.animation.AccelerateInterpolator;
 import android.view.animation.DecelerateInterpolator;
+import android.view.animation.LinearInterpolator;
 import android.view.animation.OvershootInterpolator;
 import android.view.inputmethod.EditorInfo;
+import com.termux.app.web.HoldProgressRingView;
 import android.view.inputmethod.InputMethodManager;
 import android.util.TypedValue;
 import android.widget.EditText;
@@ -97,6 +105,8 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     private FrameLayout mWebViewControlsOverlay;
     private View mWebViewPillBar;
     private View mWebViewUrlBar;
+    private FrameLayout mWebViewInfoContainer;
+    private HoldProgressRingView mWebViewInfoRing;
     private ImageButton mWebViewInfoFab;
     private EditText mWebViewUrlEditText;
     private ImageButton mWebViewUrlGoButton;
@@ -964,11 +974,20 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             if (mWebViewControlsOverlay != null) {
                 mWebViewControlsOverlay.setVisibility(View.VISIBLE);
                 mWebViewControlsOverlay.bringToFront();
-                if (mWebViewInfoFab != null) {
+                if (mWebViewInfoContainer != null) {
+                    mWebViewInfoContainer.setVisibility(View.VISIBLE);
+                    mWebViewInfoContainer.setScaleX(1f);
+                    mWebViewInfoContainer.setScaleY(1f);
+                    mWebViewInfoContainer.setAlpha(1f);
+                } else if (mWebViewInfoFab != null) {
                     mWebViewInfoFab.setVisibility(View.VISIBLE);
                     mWebViewInfoFab.setScaleX(1f);
                     mWebViewInfoFab.setScaleY(1f);
                     mWebViewInfoFab.setAlpha(1f);
+                }
+                if (mWebViewInfoRing != null) {
+                    mWebViewInfoRing.setVisibility(View.INVISIBLE);
+                    mWebViewInfoRing.reset();
                 }
                 if (mWebViewPillBar != null) {
                     mWebViewPillBar.setVisibility(View.GONE);
@@ -1026,6 +1045,8 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         mWebViewControlsOverlay = findViewById(R.id.web_view_controls_overlay);
         mWebViewPillBar = findViewById(R.id.web_view_pill_bar);
         mWebViewUrlBar = findViewById(R.id.web_view_url_bar);
+        mWebViewInfoContainer = findViewById(R.id.web_view_info_container);
+        mWebViewInfoRing = findViewById(R.id.web_view_info_ring);
         mWebViewInfoFab = findViewById(R.id.web_view_info_fab);
         mWebViewUrlEditText = findViewById(R.id.web_view_url_edit_text);
         mWebViewUrlGoButton = findViewById(R.id.web_view_url_go_button);
@@ -1056,7 +1077,137 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
         }
 
         if (mWebViewInfoFab != null) {
-            mWebViewInfoFab.setOnClickListener(v -> expandWebViewPillBar());
+            final int HOLD_DURATION_MS = 800;
+            final float[] downCoords = new float[2];
+            final boolean[] holdCompleted = new boolean[1];
+            final ValueAnimator[] holdAnimator = new ValueAnimator[1];
+
+            mWebViewInfoFab.setOnTouchListener((v, event) -> {
+                switch (event.getAction()) {
+                    case MotionEvent.ACTION_DOWN:
+                        downCoords[0] = event.getRawX();
+                        downCoords[1] = event.getRawY();
+                        holdCompleted[0] = false;
+
+                        v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+                        v.animate().scaleX(0.92f).scaleY(0.92f).setDuration(100).start();
+
+                        if (mWebViewInfoRing != null) {
+                            mWebViewInfoRing.setVisibility(View.VISIBLE);
+                            mWebViewInfoRing.setAlpha(1f);
+                            mWebViewInfoRing.setProgress(0f);
+                        }
+
+                        if (holdAnimator[0] != null) {
+                            holdAnimator[0].cancel();
+                        }
+
+                        holdAnimator[0] = ValueAnimator.ofFloat(0f, 1f);
+                        holdAnimator[0].setDuration(HOLD_DURATION_MS);
+                        holdAnimator[0].setInterpolator(new LinearInterpolator());
+                        holdAnimator[0].addUpdateListener(anim -> {
+                            float progress = (float) anim.getAnimatedValue();
+                            if (mWebViewInfoRing != null) {
+                                mWebViewInfoRing.setProgress(progress);
+                            }
+                        });
+                        holdAnimator[0].addListener(new AnimatorListenerAdapter() {
+                            private boolean mCanceled = false;
+
+                            @Override
+                            public void onAnimationCancel(Animator animation) {
+                                mCanceled = true;
+                            }
+
+                            @Override
+                            public void onAnimationEnd(Animator animation) {
+                                if (!mCanceled && !holdCompleted[0]) {
+                                    holdCompleted[0] = true;
+                                    v.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+                                    v.animate().scaleX(1.15f).scaleY(1.15f).setDuration(120)
+                                        .withEndAction(() -> v.animate().scaleX(1f).scaleY(1f).setDuration(100).start())
+                                        .start();
+
+                                    if (mWebViewInfoRing != null) {
+                                        mWebViewInfoRing.animate().alpha(0f).setDuration(160)
+                                            .withEndAction(() -> {
+                                                if (mWebViewInfoRing != null) {
+                                                    mWebViewInfoRing.setVisibility(View.INVISIBLE);
+                                                    mWebViewInfoRing.reset();
+                                                }
+                                            }).start();
+                                    }
+
+                                    DrawerLayout drawerLayout = getDrawer();
+                                    if (drawerLayout != null) {
+                                        drawerLayout.openDrawer(Gravity.LEFT);
+                                    }
+                                }
+                            }
+                        });
+                        holdAnimator[0].start();
+                        return true;
+
+                    case MotionEvent.ACTION_MOVE:
+                        float dx = Math.abs(event.getRawX() - downCoords[0]);
+                        float dy = Math.abs(event.getRawY() - downCoords[1]);
+                        float touchSlop = ViewConfiguration.get(this).getScaledTouchSlop() * 1.5f;
+                        if (dx > touchSlop || dy > touchSlop) {
+                            if (holdAnimator[0] != null) {
+                                holdAnimator[0].cancel();
+                                holdAnimator[0] = null;
+                            }
+                            v.animate().scaleX(1f).scaleY(1f).setDuration(100).start();
+                            if (mWebViewInfoRing != null) {
+                                mWebViewInfoRing.animate().alpha(0f).setDuration(150)
+                                    .withEndAction(() -> {
+                                        if (mWebViewInfoRing != null) {
+                                            mWebViewInfoRing.setVisibility(View.INVISIBLE);
+                                            mWebViewInfoRing.reset();
+                                        }
+                                    }).start();
+                            }
+                        }
+                        return true;
+
+                    case MotionEvent.ACTION_UP:
+                        v.animate().scaleX(1f).scaleY(1f).setDuration(100).start();
+                        if (holdAnimator[0] != null && holdAnimator[0].isRunning()) {
+                            long playTime = holdAnimator[0].getCurrentPlayTime();
+                            holdAnimator[0].cancel();
+                            holdAnimator[0] = null;
+
+                            if (mWebViewInfoRing != null) {
+                                mWebViewInfoRing.animate().alpha(0f).setDuration(150)
+                                    .withEndAction(() -> {
+                                        if (mWebViewInfoRing != null) {
+                                            mWebViewInfoRing.setVisibility(View.INVISIBLE);
+                                            mWebViewInfoRing.reset();
+                                        }
+                                    }).start();
+                            }
+
+                            // Quick tap (< 350ms): expand the pill bar!
+                            if (!holdCompleted[0] && playTime < 350) {
+                                expandWebViewPillBar();
+                            }
+                        }
+                        return true;
+
+                    case MotionEvent.ACTION_CANCEL:
+                        if (holdAnimator[0] != null) {
+                            holdAnimator[0].cancel();
+                            holdAnimator[0] = null;
+                        }
+                        v.animate().scaleX(1f).scaleY(1f).setDuration(100).start();
+                        if (mWebViewInfoRing != null) {
+                            mWebViewInfoRing.setVisibility(View.INVISIBLE);
+                            mWebViewInfoRing.reset();
+                        }
+                        return true;
+                }
+                return false;
+            });
         }
 
         if (mWebViewBtnClose != null) {
@@ -1131,15 +1282,20 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     }
 
     private void expandWebViewPillBar() {
-        if (mWebViewInfoFab == null || mWebViewPillBar == null) return;
-        mWebViewInfoFab.animate()
+        View target = mWebViewInfoContainer != null ? mWebViewInfoContainer : mWebViewInfoFab;
+        if (target == null || mWebViewPillBar == null) return;
+        if (mWebViewInfoRing != null) {
+            mWebViewInfoRing.setVisibility(View.INVISIBLE);
+            mWebViewInfoRing.reset();
+        }
+        target.animate()
             .scaleX(0f)
             .scaleY(0f)
             .alpha(0f)
             .setDuration(160)
             .setInterpolator(new AccelerateInterpolator())
             .withEndAction(() -> {
-                mWebViewInfoFab.setVisibility(View.GONE);
+                target.setVisibility(View.GONE);
                 mWebViewPillBar.setVisibility(View.VISIBLE);
                 mWebViewPillBar.setAlpha(0f);
                 mWebViewPillBar.setTranslationY(dpToPx(36));
@@ -1158,8 +1314,13 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
     }
 
     private void collapseWebViewPillBar() {
-        if (mWebViewPillBar == null || mWebViewInfoFab == null) return;
+        View target = mWebViewInfoContainer != null ? mWebViewInfoContainer : mWebViewInfoFab;
+        if (mWebViewPillBar == null || target == null) return;
         hideWebViewUrlBar();
+        if (mWebViewInfoRing != null) {
+            mWebViewInfoRing.setVisibility(View.INVISIBLE);
+            mWebViewInfoRing.reset();
+        }
         mWebViewPillBar.animate()
             .alpha(0f)
             .translationY(dpToPx(36))
@@ -1169,11 +1330,11 @@ public final class TermuxActivity extends AppCompatActivity implements ServiceCo
             .setInterpolator(new AccelerateInterpolator())
             .withEndAction(() -> {
                 mWebViewPillBar.setVisibility(View.GONE);
-                mWebViewInfoFab.setVisibility(View.VISIBLE);
-                mWebViewInfoFab.setScaleX(0f);
-                mWebViewInfoFab.setScaleY(0f);
-                mWebViewInfoFab.setAlpha(0f);
-                mWebViewInfoFab.animate()
+                target.setVisibility(View.VISIBLE);
+                target.setScaleX(0f);
+                target.setScaleY(0f);
+                target.setAlpha(0f);
+                target.animate()
                     .scaleX(1f)
                     .scaleY(1f)
                     .alpha(1f)
