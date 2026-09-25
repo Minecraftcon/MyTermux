@@ -588,7 +588,7 @@ if [ -z "$URL" ] && [ -z "$HTML" ] && [ "$CLOSE_SESSION" != "true" ] && [ "$OPEN
 fi
 
 AM_SOCK="/data/data/com.termux/files/apps/com.termux/termux-am/am.sock"
-AM_ARGS="broadcast -n com.termux/.app.web.TermuxWebReceiver --user 0 -a $ACTION"
+AM_ARGS="broadcast -n com.termux/.app.web.TermuxWebReceiver --user 0 -a $ACTION -f 0x10000000"
 
 if [ "$CLOSE_SESSION" = "true" ]; then
     AM_ARGS="$AM_ARGS --ez close_session true"
